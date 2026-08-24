@@ -1,0 +1,48 @@
+# aigate policy — one file, used by the Claude Code hook AND by the PR check.
+version: 1
+
+# Codes that fail the gate. Everything else is reported but never blocks.
+block_on:
+  - REGISTRY_MISSING_PACKAGE
+  - SEMGREP_ERROR
+
+# Paths where the bar is higher. Findings here escalate via critical_path_block_on.
+critical_paths:
+  - "src/auth/**"
+  - "src/payments/**"
+  - "**/*.env*"
+
+# Extra codes that block, but only inside critical_paths.
+critical_path_block_on:
+  - SEMGREP_WARNING
+
+# Never checked, whatever the diff says.
+ignore_paths:
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/*.min.js"
+
+registry:
+  enabled: true
+  timeout_ms: 4000
+  # Offline or flaky registry downgrades to REGISTRY_UNVERIFIED instead of a false block.
+  allow_offline: true
+  # Internal packages that will never resolve on the public registry.
+  allowlist: []
+  registry_url: "https://registry.npmjs.org"
+  cache_ttl_hours: 168
+
+semgrep:
+  enabled: true
+  config:
+    - "semgrep/rules.yml"
+  timeout_ms: 60000
+
+# Optional deeper review. CI only, off unless AIGATE_LLM_URL is set.
+llm:
+  enabled: false
+  url: ""
+  model: "gpt-4o-mini"
+  timeout_ms: 60000
+  max_diff_bytes: 60000

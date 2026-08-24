@@ -1,0 +1,200 @@
+# Reusable `ai-review` check.
+#
+# One required status check per repo, running the same policy.yml the Claude Code
+# hook uses in-session. Call it from your own workflow (see README), do not fork it:
+#
+#   jobs:
+#     ai-review:
+#       uses: your-org/ai-review-gate/.github/workflows/ai-review.yml@v0
+#       permissions: { contents: read, pull-requests: write }
+name: ai-review
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node version used to run the gate.
+        type: string
+        default: '20'
+      policy:
+        description: Path to policy.yml, relative to working-directory.
+        type: string
+        default: policy.yml
+      working-directory:
+        description: Directory to run the gate in.
+        type: string
+        default: '.'
+      aigate-spec:
+        description: >-
+          What to run the gate from. An npm spec (`ai-review-gate@0.1.0`) is fetched with
+          npx; `.` builds the checked-out repo, which is what this repo uses on itself.
+        type: string
+        default: ai-review-gate@latest
+      install-semgrep:
+        description: Install semgrep. Turn off if policy.yml disables the semgrep check.
+        type: boolean
+        default: true
+      comment:
+        description: Post a single summary comment on the PR (updated in place, never duplicated).
+        type: boolean
+        default: true
+      llm-review:
+        description: Run the optional LLM pass. Requires the llm-url secret.
+        type: boolean
+        default: false
+    secrets:
+      llm-url:
+        description: OpenAI-compatible chat-completions endpoint for the optional LLM pass.
+        required: false
+      llm-api-key:
+        description: Bearer token for that endpoint.
+        required: false
+
+jobs:
+  ai-review:
+    name: ai-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The gate diffs against the merge base, so it needs real history.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install semgrep
+        if: inputs.install-semgrep
+        run: pipx install semgrep
+
+      - name: Resolve the diff range
+        id: range
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASE_SHA:-}" ]; then
+            # Three dots: what this branch introduced, not what main did meanwhile.
+            range="${BASE_SHA}...HEAD"
+          elif [ -n "${EVENT_BEFORE:-}" ] && git cat-file -e "${EVENT_BEFORE}^{commit}" 2>/dev/null; then
+            range="${EVENT_BEFORE}...HEAD"
+          else
+            range="HEAD~1...HEAD"
+          fi
+          echo "range=${range}" >> "$GITHUB_OUTPUT"
+          echo "Checking ${range}"
+
+      - name: Build the gate
+        id: gate
+        env:
+          SPEC: ${{ inputs.aigate-spec }}
+        run: |
+          set -euo pipefail
+          if [ "$SPEC" = "." ]; then
+            npm ci
+            npm run build
+            echo "cmd=node $(pwd)/dist/src/cli.js" >> "$GITHUB_OUTPUT"
+          else
+            echo "cmd=npx --yes $SPEC" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show the policy in effect
+        run: ${{ steps.gate.outputs.cmd }} print-policy --policy "${{ inputs.policy }}"
+
+      - name: Run the gate
+        id: check
+        continue-on-error: true
+        env:
+          RANGE: ${{ steps.range.outputs.range }}
+        run: |
+          set -uo pipefail
+          ${{ steps.gate.outputs.cmd }} check \
+            --diff "$RANGE" \
+            --policy "${{ inputs.policy }}" \
+            --format markdown \
+            --output aigate-summary.md \
+            --no-color
+          status=$?
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+
+          ${{ steps.gate.outputs.cmd }} check \
+            --diff "$RANGE" \
+            --policy "${{ inputs.policy }}" \
+            --json \
+            --output aigate-report.json \
+            --no-color > /dev/null || true
+          exit 0
+
+      - name: Optional LLM review
+        # The secrets context is not readable from a step-level `if`, so the endpoint
+        # check lives in the script. No URL means the pass reports itself as skipped.
+        if: inputs.llm-review
+        continue-on-error: true
+        env:
+          AIGATE_LLM_URL: ${{ secrets.llm-url }}
+          AIGATE_LLM_API_KEY: ${{ secrets.llm-api-key }}
+          RANGE: ${{ steps.range.outputs.range }}
+        run: |
+          ${{ steps.gate.outputs.cmd }} review \
+            --diff "$RANGE" \
+            --policy "${{ inputs.policy }}" \
+            --format markdown \
+            --output aigate-llm.md \
+            --no-color || true
+          cat aigate-llm.md >> aigate-summary.md
+
+      - name: Job summary
+        if: always()
+        run: cat aigate-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigate-report
+          path: |
+            ${{ inputs.working-directory }}/aigate-summary.md
+            ${{ inputs.working-directory }}/aigate-report.json
+          if-no-files-found: ignore
+
+      - name: Comment on the PR
+        # One comment per PR, edited in place. Noise is why teams mute review bots.
+        if: always() && inputs.comment && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          body=$(cat aigate-summary.md)
+          existing=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+            --jq 'map(select(.body | contains("<!-- aigate-summary -->"))) | .[0].id // empty')
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="$body" > /dev/null
+            echo "Updated comment ${existing}"
+          else
+            gh api -X POST "repos/${REPO}/issues/${PR}/comments" -f body="$body" > /dev/null
+            echo "Created a new comment"
+          fi
+
+      - name: Enforce the gate
+        # Deliberately the last step: the summary, artifact and comment all exist
+        # before the job goes red, so a blocked PR is never a mystery.
+        run: |
+          status="${{ steps.check.outputs.status }}"
+          case "$status" in
+            0) echo "aigate: PASS" ;;
+            1) echo "aigate: BLOCK — see the job summary"; exit 1 ;;
+            *) echo "aigate: tool error (exit ${status})"; exit 1 ;;
+          esac

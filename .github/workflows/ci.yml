@@ -1,0 +1,45 @@
+# CI for the gate itself.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: build + test (node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The Claude Code hook runs on developer laptops, so Windows is a first-class target.
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run build
+      - run: node --test "dist/test/**/*.test.js"
+
+  rules:
+    name: validate semgrep rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx install semgrep
+      # A malformed ruleset would silently degrade every gate run to "semgrep unavailable".
+      - run: semgrep --validate --config semgrep/rules.yml
+
+  dogfood:
+    name: ai-review (self)
+    needs: [test]
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/ai-review.yml
+    with:
+      aigate-spec: '.'

@@ -1,0 +1,31 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# aigate's own caches and reports
+.aigate-cache/
+aigate-report.json
+aigate-summary.md
+
+# Test and coverage output
+coverage/
+*.lcov
+.nyc_output/
+
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp

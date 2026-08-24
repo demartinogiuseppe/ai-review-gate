@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./node_modules/ai-review-gate/hooks/aigate-hook.mjs",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

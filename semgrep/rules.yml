@@ -1,0 +1,108 @@
+# Minimal local ruleset, tuned for how LLM coding agents fail rather than for style.
+#
+# Each rule here exists because agents produce it *confidently*: plausible-looking
+# code a human reviewer skims past. Style and naming belong in a linter, not in the
+# gate. Add the community packs on top in CI via semgrep.config in policy.yml:
+#
+#   semgrep:
+#     config: ["semgrep/rules.yml", "p/secrets", "p/javascript"]
+#
+# ERROR blocks by default. WARNING blocks only inside critical_paths. INFO never blocks.
+rules:
+  - id: aigate-hardcoded-secret
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Hardcoded credential assigned to $NAME. Read it from the environment or a secret
+      store; a literal here ends up in git history forever.
+    patterns:
+      - pattern-either:
+          - pattern: const $NAME = $VALUE
+          - pattern: let $NAME = $VALUE
+          - pattern: var $NAME = $VALUE
+          - pattern: $OBJ.$NAME = $VALUE
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^.*(api_?key|secret|passwd|password|token|access_?key|private_?key|client_?secret).*$
+      # Only opaque literals of real credential length; short or interpolated values are noise.
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^["'][A-Za-z0-9_\-\+/=\.]{12,}["']$
+      - pattern-not-regex: (?i)(process\.env|placeholder|example|dummy|redacted|changeme|your[-_])
+
+  - id: aigate-aws-access-key
+    languages: [generic]
+    severity: ERROR
+    message: AWS access key id committed to source. Rotate it and load it from the environment.
+    pattern-regex: \b(A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b
+
+  - id: aigate-private-key-block
+    languages: [generic]
+    severity: ERROR
+    message: Private key material committed to source. Rotate the key and store it outside the repo.
+    pattern-regex: -----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----
+
+  - id: aigate-eval-on-non-literal
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      eval/Function on a non-literal value executes arbitrary code. Parse the value or
+      dispatch through a lookup table instead.
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function($X)
+      - pattern-not: eval("...")
+      - pattern-not: new Function("...")
+
+  - id: aigate-shell-command-interpolation
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Shell command built by interpolation or concatenation. Use execFile/spawn with an
+      argument array so the value can never be read as shell syntax.
+    pattern-regex: \b(execSync|exec)\s*\(\s*(`[^`]*\$\{|["'][^"']*["']\s*\+|[A-Za-z_$][\w$]*\s*\+)
+
+  - id: aigate-sql-string-interpolation
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      SQL assembled by interpolation. Use parameterised queries; every driver and ORM
+      supports them.
+    pattern-regex: (?i)\.(query|execute|raw)\s*\(\s*(`[^`]*\b(select|insert|update|delete|drop)\b[^`]*\$\{|["'][^"']*\b(select|insert|update|delete|drop)\b[^"']*["']\s*\+)
+
+  - id: aigate-tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      TLS certificate verification disabled. This accepts any certificate, including an
+      attacker's, and usually gets added to silence a local error.
+    pattern-either:
+      - pattern: "rejectUnauthorized: false"
+      - pattern: "strictSSL: false"
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+
+  - id: aigate-empty-catch
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Swallowed error. An empty catch turns a real failure into silent wrong behaviour —
+      log it, handle it, or let it propagate.
+    pattern: |
+      try { ... } catch($E) { }
+
+  - id: aigate-non-null-assertion-on-lookup
+    languages: [typescript]
+    severity: WARNING
+    message: >-
+      Non-null assertion on a parsed or looked-up value. If the input is missing this
+      throws at runtime with no useful message; check it explicitly.
+    pattern-either:
+      - pattern: JSON.parse($X)!
+      - pattern: $MAP.get($K)!
+
+  - id: aigate-placeholder-implementation
+    languages: [javascript, typescript]
+    severity: INFO
+    message: Placeholder left in code. Implement it or remove it before merging.
+    pattern-regex: (?i)//\s*(TODO|FIXME|XXX)\b[^\n]*\b(implement|actual|real|proper|later|for now|stub)\b
