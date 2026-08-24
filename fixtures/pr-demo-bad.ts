@@ -1,13 +1,11 @@
-// Fixture for the PR-level gate demo. Deliberately broken in two ways an agent
-// plausibly produces: an invented dependency and a credential written inline.
-// Nothing imports this file; it exists to be caught.
-import { withRetry } from '@acme-internal/retry-policy-v3';
+// Same fixture, now clean: the invented dependency is gone and the credential
+// comes from the environment. The ai-review check should go green on this commit
+// and edit its existing comment rather than posting a second one.
+const stripeSecretKey = process.env['STRIPE_SECRET_KEY'] ?? '';
 
-const STRIPE_SECRET_KEY = "sk_live_51QhallucinatedKeyForTheGateDemo00";
-
-export const fetchInvoice = withRetry(async (id: string) => {
+export const fetchInvoice = async (id: string): Promise<unknown> => {
   const response = await fetch(`https://api.stripe.com/v1/invoices/${id}`, {
-    headers: { authorization: `Bearer ${STRIPE_SECRET_KEY}` },
+    headers: { authorization: `Bearer ${stripeSecretKey}` },
   });
   return response.json();
-});
+};
