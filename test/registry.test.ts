@@ -73,6 +73,47 @@ test('imports: a comment marker inside a string is not a comment', () => {
   assert.deepEqual(refs.map((r) => r.packageName), ['real-pkg']);
 });
 
+test('imports: import-like text inside a string literal is not a dependency', () => {
+  // The shape that made the gate block on its own test suite: source code carried as
+  // payload text, written to disk by the test rather than imported by it.
+  const refs = extractImports(
+    [
+      'import { writeFileSync } from "node:fs";',
+      `writeFileSync('src/bad.ts', "import ghost from 'ghost-pkg-xyz';\\n");`,
+      "const sample = `import other from 'template-ghost';`;",
+      "const cjs = 'require(\\'string-ghost\\')';",
+      "import real from 'real-pkg';",
+    ].join('\n'),
+  );
+
+  assert.deepEqual(refs.map((r) => r.packageName), ['node:fs', 'real-pkg']);
+});
+
+test('imports: a real import of a fake package is still a finding', () => {
+  const refs = extractImports("import x from 'fake-pkg';\nconst y = require('other-fake-pkg');");
+  assert.deepEqual(refs.map((r) => r.packageName), ['fake-pkg', 'other-fake-pkg']);
+});
+
+test('imports: code inside a template interpolation is still code', () => {
+  const refs = extractImports("const rendered = `before ${require('real-pkg')} after`;");
+  assert.deepEqual(refs.map((r) => r.packageName), ['real-pkg']);
+});
+
+test('imports: a regex literal neither hides nor invents an import', () => {
+  // An unbalanced quote inside a regex used to desynchronise the scan for the rest of
+  // the file, which would have silently swallowed every import below it.
+  const afterRegex = extractImports(["const re = /don't/;", "import real from 'real-pkg';"].join('\n'));
+  assert.deepEqual(afterRegex.map((r) => r.packageName), ['real-pkg']);
+
+  const insideRegex = extractImports(
+    ["const re = /import x from 'regex-ghost'/;", "import real from 'real-pkg';"].join('\n'),
+  );
+  assert.deepEqual(insideRegex.map((r) => r.packageName), ['real-pkg']);
+
+  const division = extractImports(['const ratio = total / count;', "import real from 'real-pkg';"].join('\n'));
+  assert.deepEqual(division.map((r) => r.packageName), ['real-pkg']);
+});
+
 test('imports: package name derivation and validity', () => {
   assert.equal(toPackageName('lodash/fp/get'), 'lodash');
   assert.equal(toPackageName('@scope/pkg/sub/path'), '@scope/pkg');
@@ -258,4 +299,29 @@ test('registry: non-source and deleted files are skipped', async () => {
   });
 
   assert.deepEqual(findings, []);
+});
+
+test('registry: a package named only inside a string literal is not checked', async () => {
+  const root = sandbox();
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: {} }));
+  const file = write(
+    root,
+    'test/fixture.test.ts',
+    [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync('src/bad.ts', "import ghost from 'ghost-pkg-xyz';\\n");`,
+    ].join('\n'),
+  );
+
+  const calls: string[] = [];
+  const findings = await checkRegistry({
+    files: [file],
+    policy: registryPolicy,
+    root,
+    cacheDir: null,
+    fetchImpl: fakeRegistry([], (url) => calls.push(url)),
+  });
+
+  assert.deepEqual(findings, [], 'test payload text is not a dependency');
+  assert.deepEqual(calls, [], 'and it must not cost a registry lookup either');
 });
