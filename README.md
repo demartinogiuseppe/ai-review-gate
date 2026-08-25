@@ -65,8 +65,10 @@ Self-hosted throughout: your runner, your policy file, no review SaaS in the pat
 
 ## Install
 
+From the repository, which is where the tagged releases live:
+
 ```bash
-npm install --save-dev ai-review-gate
+npm install --save-dev github:demartinogiuseppe/ai-review-gate#v0
 npx aigate print-policy          # see what is in effect
 ```
 
@@ -242,7 +244,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write     # only needed for the summary comment
-    uses: your-org/ai-review-gate/.github/workflows/ai-review.yml@v0
+    uses: demartinogiuseppe/ai-review-gate/.github/workflows/ai-review.yml@v0
     with:
       node-version: '20'
       policy: policy.yml
