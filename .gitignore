@@ -32,3 +32,6 @@ desktop.ini
 
 # Claude Code local overrides (machine-specific)
 .claude/settings.local.json
+
+# Build brief, kept locally
+BRIEF.md
