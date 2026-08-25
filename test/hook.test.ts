@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -132,4 +132,81 @@ test('hook: a broken gate does not brick the session unless strict', async () =>
 
   const strict = await runHook(root, payload, { ...missingCli, AIGATE_HOOK_STRICT: '1' });
   assert.equal(strict.status, 2, 'AIGATE_HOOK_STRICT=1 opts into failing closed');
+});
+
+/**
+ * Makes the sandbox a git repo. Returns false if git is unavailable, so the
+ * Bash-coverage tests skip instead of failing for the wrong reason.
+ */
+function gitInit(root: string): boolean {
+  const init = spawnSync('git', ['init', '--quiet'], { cwd: root, encoding: 'utf8' });
+  if (init.error || init.status !== 0) return false;
+  spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+  spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+  return true;
+}
+
+test('hook: gates a Bash-mediated write through changed-file detection', async () => {
+  const registry = await startRegistry();
+  try {
+    const root = sandbox(registry.port);
+    if (!gitInit(root)) return; // no git on this machine; nothing to prove here
+
+    // What `cat > src/bad.ts <<'EOF' ... EOF` leaves behind: a new file on disk and a
+    // payload that names no path at all.
+    writeFileSync(join(root, 'src', 'bad.ts'), "import ghost from 'ghost-pkg-xyz';\n");
+
+    const { status, output } = await runHook(
+      root,
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: "cat > src/bad.ts <<'EOF'\nimport ghost from 'ghost-pkg-xyz';\nEOF" },
+      }),
+    );
+
+    assert.equal(status, 2, 'a write via Bash must reach the agent the same way a Write does');
+    assert.match(output, /REGISTRY_MISSING_PACKAGE/);
+    assert.match(output, /The command already ran/);
+  } finally {
+    registry.close();
+  }
+});
+
+test('hook: a read-only command stays out of the way', async () => {
+  const registry = await startRegistry();
+  try {
+    const root = sandbox(registry.port);
+    if (!gitInit(root)) return;
+
+    // The bad file is sitting right there. Listing a directory is still not a write.
+    writeFileSync(join(root, 'src', 'bad.ts'), "import ghost from 'ghost-pkg-xyz';\n");
+
+    const { status, output } = await runHook(
+      root,
+      JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'grep -rn "TODO" src 2>/dev/null' } }),
+    );
+
+    assert.equal(status, 0, 'innocent commands must not pay for the bypass fix');
+    assert.equal(output.trim(), '');
+  } finally {
+    registry.close();
+  }
+});
+
+test('hook: a Bash write that touches no source file allows', async () => {
+  const registry = await startRegistry();
+  try {
+    const root = sandbox(registry.port);
+    if (!gitInit(root)) return;
+    writeFileSync(join(root, 'notes.md'), '# not code\n');
+
+    const { status } = await runHook(
+      root,
+      JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo "# not code" > notes.md' } }),
+    );
+
+    assert.equal(status, 0);
+  } finally {
+    registry.close();
+  }
 });

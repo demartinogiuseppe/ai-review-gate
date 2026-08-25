@@ -158,7 +158,17 @@ Add to `.claude/settings.json` (or `.claude/settings.local.json`):
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./node_modules/ai-review-gate/hooks/aigate-hook.mjs",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
@@ -177,6 +187,25 @@ stdin, pulls out the touched paths, runs `aigate check --files`, and exits **2**
 block — which is how Claude Code feeds the findings back to the agent so it fixes them
 in the same turn. On a clean write it prints nothing.
 
+**Bash, sed and heredoc writes are covered via changed-file detection.** An agent that
+edits a file with `cat > src/app.ts <<'EOF'`, `sed -i`, or a python script sends a
+payload with no file path in it, so a matcher on `Write|Edit|MultiEdit` alone never
+runs and the change reaches the pull request ungated. That is a hole in the loop, not a
+gap in coverage, which is why the second matcher exists. On a shell command the hook
+checks whether the command could have written anything at all, and only then asks git
+what the worktree is carrying: `git status --porcelain` (not `git diff`, because a
+heredoc usually produces an untracked file that `git diff` cannot see), narrowed to
+source files modified in the last five minutes, capped at 40, then handed to the same
+`aigate check --files`. A read-only command exits 0 without spawning git. So does a
+command that only touched files the policy ignores.
+
+Two consequences worth knowing before you wire it up. The write-detection is a
+heuristic over the command string, generous by design but not a proof: set
+`AIGATE_HOOK_ALL_COMMANDS=1` to run the changed-file scan after every command instead.
+And because the scan looks at the worktree rather than at one file, a blocking finding
+that is already sitting uncommitted will be reported again after the next shell write,
+until it is fixed or committed.
+
 **Why PostToolUse and not PreToolUse.** PreToolUse fires *before* the write lands, so
 the file on disk still holds the old content — the check would pass on precisely the
 change you wanted to catch. PostToolUse runs against what was actually written. The
@@ -193,6 +222,8 @@ Environment:
 | `AIGATE_HOOK_STRICT=1` | Fail closed: block when the gate itself cannot run |
 | `AIGATE_HOOK_VERBOSE=1` | Also print the report on a passing check |
 | `AIGATE_CACHE_DIR` | Where the registry cache lives (default `.aigate-cache/`) |
+| `AIGATE_HOOK_ALL_COMMANDS=1` | Run the changed-file scan after every shell command, not just write-looking ones |
+| `AIGATE_COMMAND_WINDOW_MS` | How recent a change must be to count as the command's (default `300000`) |
 
 No LLM runs in-session. It is too slow for a write hook and the deterministic checks
 already cover what an agent gets wrong on that timescale.
