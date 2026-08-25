@@ -1,12 +1,25 @@
 # ai-review-gate
 
-A quality gate for AI-generated code. One policy file, enforced in two places:
+**Same policy in the agent session and in CI. The error goes back to the agent in the
+same turn.**
 
-- **in your Claude Code session**, on every write, in milliseconds
-- **on your pull requests**, as a single required `ai-review` check
+Most AI review tools comment on a pull request after the agent has finished and moved
+on. By then the mistake is three files deep, and you are the one unpicking it.
+ai-review-gate closes the loop while the session is still open:
 
-It is not a generic AI reviewer. It targets the ways coding agents actually fail —
-starting with the one that matters most: **imports of packages that do not exist**.
+```
+generate -> reject -> repair
+```
+
+The agent writes a file. The hook checks it in milliseconds and exits `2`. Claude Code
+puts the findings back in front of the model, which repairs them before it writes
+anything else. The same `policy.yml` then runs over the whole diff as one required
+`ai-review` check on the pull request, so the rule that stopped the write in session is
+the rule that stops the merge. They load the same file; they cannot drift.
+
+Feedback latency is the product. The checks are the engine.
+
+## What the agent sees
 
 ```
 BLOCKING (1)
@@ -17,15 +30,25 @@ BLOCKING (1)
 aigate: BLOCK — 1 blocking finding(s) in 1 file(s) (431ms)
 ```
 
-## Why this exists
+Every finding is `CODE: message [file:line]` plus a `fix:` line, because the reader is
+usually an agent correcting its own output rather than a human reading a report. Exit
+codes are the whole contract: **0** pass, **1** blocked by policy, **2** the gate itself
+failed.
 
-An agent that invents `@acme/retry-utils` produces code that reads perfectly, passes
-review, type-checks against `any`, and fails at install time — or worse, gets picked
-up by someone watching npm's 404 logs and squatting the name. No linter catches it,
-because there is nothing wrong with the *code*. Only the registry knows.
+## Engines today
 
-Everything else in the gate follows the same rule: check what an agent gets
-confidently wrong, and stay out of the way otherwise.
+The loop is the product. What runs inside it is meant to be swapped and added to.
+
+- **npm registry.** Imported packages that do not exist, caught at write time instead
+  of at install time. Lookups are cached on disk, so a repeat write costs single-digit
+  milliseconds.
+- **semgrep.** A small local ruleset aimed at agent output rather than style: secrets,
+  interpolated shell and SQL, disabled TLS verification, swallowed errors, placeholder
+  implementations. Optional; if semgrep is missing the gate says so and carries on.
+- **Optional LLM pass.** Off unless you point it at an endpoint. CI only, advisory by
+  default, and forbidden from repeating what the deterministic checks already said.
+
+Self-hosted throughout: your runner, your policy file, no review SaaS in the path.
 
 ## Design rules
 
@@ -226,12 +249,13 @@ Locally: `AIGATE_LLM_URL=... AIGATE_LLM_API_KEY=... aigate review --diff main...
 `LLM_ISSUE` is not in `block_on`, so the pass is advisory until you add it. That is on
 purpose — a model having a bad day should not fail anyone's build.
 
-## What semgrep checks
+## The semgrep engine
 
-`semgrep/rules.yml` ships a small ruleset aimed at agent output, not style: hardcoded
-credentials, AWS keys and private key blocks, `eval` on non-literals, shell and SQL
-built by interpolation, disabled TLS verification, swallowed errors, non-null
-assertions on parsed input, and placeholder implementations left behind.
+One engine under the loop, off the shelf and replaceable. `semgrep/rules.yml` ships a
+small ruleset aimed at agent output, not style: hardcoded credentials, AWS keys and
+private key blocks, `eval` on non-literals, shell and SQL built by interpolation,
+disabled TLS verification, swallowed errors, non-null assertions on parsed input, and
+placeholder implementations left behind.
 
 Add the community packs in CI for more coverage:
 
