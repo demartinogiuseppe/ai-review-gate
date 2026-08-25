@@ -174,9 +174,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          STATUS: ${{ steps.check.outputs.status }}
         run: |
           set -euo pipefail
-          body=$(cat aigate-summary.md)
+          # A diff with nothing in scope returns before the report is written, so there
+          # is no summary file to read. Bailing out here would leave the previous run's
+          # comment standing: a green PR wearing a red verdict, which is worse than
+          # saying nothing at all. A missing report is never reported as a pass unless
+          # the gate actually passed.
+          if [ -s aigate-summary.md ]; then
+            body=$(cat aigate-summary.md)
+          elif [ "${STATUS:-}" = "0" ]; then
+            body=$(printf '<!-- aigate-summary -->\n### **ai-review: PASS**\n\nNothing in scope for this diff.\n')
+          else
+            body=$(printf '<!-- aigate-summary -->\n### **ai-review: tool error**\n\nThe gate exited %s without writing a report. See the job log.\n' "${STATUS:-unknown}")
+          fi
           existing=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
             --jq 'map(select(.body | contains("<!-- aigate-summary -->"))) | .[0].id // empty')
 
