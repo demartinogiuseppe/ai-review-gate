@@ -298,6 +298,38 @@ semgrep:
 If semgrep is not installed the gate reports `SEMGREP_UNAVAILABLE` and carries on with
 the registry check, so nobody is forced to install a Python toolchain to get value.
 
+## Data and privacy
+
+No telemetry. Nothing is reported back to the author of this tool, in any
+configuration: there is no account, no service behind it, and one hardcoded URL in the
+entire codebase (`registry.npmjs.org`, and you can point that elsewhere).
+
+**The gate never calls a model.** `aigate check` is the hook and the PR check, and it
+has no LLM code path at all: `src/gate.ts` does not import one. That is structural
+rather than a default someone can flip in a config file.
+
+What leaves your machine, and when:
+
+| Path | What is sent | Where |
+| --- | --- | --- |
+| Registry check | Imported **package names**, never file contents | `registry.registry_url`, npm by default |
+| semgrep | Nothing | Local process |
+| `aigate review` | The diff, truncated | The endpoint **you** configure, and nowhere else |
+
+Package names are metadata, but they are still metadata: on a private repo, an internal
+package name tells a public registry that the name exists. Set `registry.allowlist` for
+those, and they are never looked up.
+
+Registry answers are cached in `.aigate-cache/` (gitignored) so the second write costs
+no network at all.
+
+The LLM pass is off until you give it an endpoint, via `AIGATE_LLM_URL` or `llm.url` in
+the policy; with no URL it never runs. When it does run it sends the diff to that
+endpoint, whether that is OpenAI, a gateway your company controls, or a model on your
+laptop. One thing worth knowing before you enable it: the API key is read as
+`AIGATE_LLM_API_KEY` first and falls back to `OPENAI_API_KEY`, so if you already have
+that variable in your environment, that is the key it will use.
+
 ## Development
 
 ```bash
